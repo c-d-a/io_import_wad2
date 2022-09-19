@@ -18,7 +18,7 @@
 bl_info = {
     "name": "Import Quake WAD2 (.wad)",
     "author": "chedap",
-    "version": (2022, 9, 17),
+    "version": (2022, 9, 18),
     "blender": (3, 3, 0),
     "location": "File > Import-Export",
     "description": "Import textures as materials",
@@ -663,18 +663,92 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             group.links.new(temp2.outputs['Is Reflection Ray'],temp1.inputs[1])
 
 
+class ResetTexelDensity(bpy.types.Operator):
+    bl_idname = 'uv.reset_texel_density_q1'
+    bl_label = "Reset Density"
+    bl_description = "Rescale UVs of selected faces"
+    bl_options = {'REGISTER', 'UNDO'}
+    option_scale: FloatProperty(name="Density", default=1.0,
+                            description="(texels/unit)")
+    option_box: BoolProperty(name="Box Project", default=False,
+                            description="Box-project before applying density")
+
+    def calc_area_2d(self, coords):
+        x, y = zip(*coords)
+        return 0.5*abs(sum( x[i]*(y[i+1]-y[i-1]) for i in range(-1,len(x)-1) ))
+
+    def execute(self, context):
+        if self.option_box:
+            bpy.ops.uv.cube_project()
+        mat_area = dict()
+        objs = bpy.context.selected_objects
+        if not objs:
+            objs = [bpy.context.active_object]
+        for obj in objs:
+            bm = bmesh.from_edit_mesh(obj.data)
+            uv_layer = bm.loops.layers.uv.active
+            if uv_layer is None: continue
+
+            # measure images
+            for slot in obj.material_slots:
+                mat = slot.material
+                if mat and mat.name not in mat_area:
+                    mat_area[mat.name] = dict()
+                    mat_area[mat.name]['uv'] = mat_area[mat.name]['3d'] = 0
+                    width = height = 64
+                    if mat.node_tree:
+                        for node in mat.node_tree.nodes:
+                            if node.type == 'TEX_IMAGE':
+                                if node.image.has_data:
+                                    width, height = node.image.size
+                                    break
+                    mat_area[mat.name]['tex'] = width * height
+
+            # measure area
+            for face in bm.faces:
+                if not face.select: continue
+                mat = obj.material_slots[face.material_index].material
+                if mat is None: continue
+                loop_uvs = [loop[uv_layer].uv for loop in face.loops]
+                mat_area[mat.name]['uv'] += self.calc_area_2d(loop_uvs)
+                mat_area[mat.name]['3d'] += face.calc_area()
+
+            # apply density
+            for face in bm.faces:
+                if not face.select: continue
+                mat = obj.material_slots[face.material_index].material
+                if mat is None: continue
+                area = mat_area[mat.name]
+                mult = math.sqrt( area['3d'] / (area['tex'] * area['uv']) )
+                mult *= self.option_scale
+                loop_uvs = [loop[uv_layer].uv for loop in face.loops]
+                for uv in loop_uvs:
+                    uv *= mult
+
+            bmesh.update_edit_mesh(obj.data)
+
+        return {'FINISHED'}
+
+
 def menu_func_import(self, context):
     self.layout.operator(ImportQuakeWad.bl_idname, text="Quake WAD (.wad)")
+
+def menu_func_uv(self, context):
+    self.layout.operator(ResetTexelDensity.bl_idname)
 
 def register():
     bpy.utils.register_class(ImportQuakeWadPreferences)
     bpy.utils.register_class(ImportQuakeWad)
+    bpy.utils.register_class(ResetTexelDensity)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
+    bpy.types.VIEW3D_MT_uv_map.append(menu_func_uv)
 
 def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
+    bpy.types.VIEW3D_MT_uv_map.remove(menu_func_uv)
     bpy.utils.unregister_class(ImportQuakeWadPreferences)
     bpy.utils.unregister_class(ImportQuakeWad)
+    bpy.utils.unregister_class(ResetTexelDensity)
 
 
 quake1palette = [0,0,0,          15,15,15,       31,31,31,       47,47,47,
