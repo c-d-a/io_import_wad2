@@ -18,7 +18,7 @@
 bl_info = {
     "name": "Import Quake WAD2 (.wad)",
     "author": "chedap",
-    "version": (2022, 9, 18),
+    "version": (2022, 9, 19),
     "blender": (3, 3, 0),
     "location": "File > Import-Export",
     "description": "Import textures as materials",
@@ -730,25 +730,73 @@ class ResetTexelDensity(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class ApplyAssetEditMode(bpy.types.Operator):
+    bl_idname = 'asset.apply_to_faces'
+    bl_label = "Apply to Selection"
+    bl_description = "Apply material to selected faces (append slot if needed)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(self, context):
+        return ( context.object.mode == 'EDIT'
+                and context.active_file.id_type == 'MATERIAL' )
+
+    def execute(self, context):
+        mat = context.active_file.local_id
+        if mat is None:
+            lib_path = context.preferences.filepaths.asset_libraries.get(
+                    context.area.spaces.active.params.asset_library_ref).path
+            mat_path = context.active_file.relative_path.split('\\Material/')
+            blend_path = f"{lib_path}\\{mat_path[0]}"
+            with bpy.data.libraries.load(blend_path) as (src, dest):
+                dest.materials = [mat_path[1]]
+            mat = bpy.data.materials[mat_path[1]]
+            mat.asset_clear()
+
+        objs = bpy.context.selected_objects
+        if not objs:
+            objs = [bpy.context.active_object]
+        for obj in objs:
+            mat_idx = obj.data.materials.find(mat.name)
+            if mat_idx == -1:
+                obj.data.materials.append(mat)
+                mat_idx = len(obj.data.materials) - 1
+            bm = bmesh.from_edit_mesh(obj.data)
+            for face in bm.faces:
+                if face.select:
+                    face.material_index = mat_idx
+            bmesh.update_edit_mesh(obj.data)
+        return {'FINISHED'}
+
+
 def menu_func_import(self, context):
     self.layout.operator(ImportQuakeWad.bl_idname, text="Quake WAD (.wad)")
 
 def menu_func_uv(self, context):
     self.layout.operator(ResetTexelDensity.bl_idname)
 
+def menu_func_asset(self, context):
+    self.layout.operator(ApplyAssetEditMode.bl_idname)
+
 def register():
     bpy.utils.register_class(ImportQuakeWadPreferences)
     bpy.utils.register_class(ImportQuakeWad)
     bpy.utils.register_class(ResetTexelDensity)
+    bpy.utils.register_class(ApplyAssetEditMode)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.VIEW3D_MT_uv_map.append(menu_func_uv)
+    if bpy.app.version > (3,0,0):
+        bpy.types.ASSETBROWSER_MT_context_menu.prepend(menu_func_asset)
 
 def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.VIEW3D_MT_uv_map.remove(menu_func_uv)
+    if bpy.app.version > (3,0,0):
+        bpy.types.ASSETBROWSER_MT_context_menu.remove(menu_func_asset)
     bpy.utils.unregister_class(ImportQuakeWadPreferences)
     bpy.utils.unregister_class(ImportQuakeWad)
     bpy.utils.unregister_class(ResetTexelDensity)
+    bpy.utils.unregister_class(ApplyAssetEditMode)
 
 
 quake1palette = [0,0,0,          15,15,15,       31,31,31,       47,47,47,
