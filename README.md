@@ -3,7 +3,7 @@
 This addon creates materials for imported images and marks them as assets.
 Despite the name, it can also import loose images and textures from .bsp files.
 
-Supported Blender versions: 2.83 - 3.3+
+Supported Blender versions: 2.83 - 4.0+
 
 All created materials will get marked as assets and tagged by input .wad or folder. Special materials such as water, sky, and animated texture sequences will get additional node groups set up. The addon can also be configured to name materials using a relative path instead of just the texture name.
 

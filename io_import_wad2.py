@@ -18,8 +18,8 @@
 bl_info = {
     "name": "Import Quake WAD2 (.wad)",
     "author": "chedap",
-    "version": (2022, 9, 19),
-    "blender": (3, 3, 0),
+    "version": (2023, 11, 14),
+    "blender": (4, 0, 0),
     "location": "File > Import-Export",
     "description": "Import textures as materials",
     "category": "Import-Export",
@@ -30,6 +30,11 @@ import bpy, struct, bmesh, math
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import *
 from os.path import isfile
+
+if bpy.app.version < (4,0,0):
+    em_socket = 'Emission'
+else:
+    em_socket = 'Emission Color'
 
 class ImportQuakeWadPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
@@ -277,7 +282,10 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
                     mat.use_nodes = True
                     mat.preview_render_type = 'FLAT'
                     shader = mat.node_tree.nodes['Principled BSDF']
-                    shader.inputs['Specular'].default_value = 0
+                    if bpy.app.version < (4,0,0):
+                        shader.inputs['Specular'].default_value = 0.0
+                    else:
+                        shader.inputs['Specular IOR Level'].default_value = 0.0
                     img_n = mat.node_tree.nodes.new('ShaderNodeTexImage')
                     img_n.image = img
                     img_n.interpolation = 'Closest'
@@ -289,7 +297,8 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
                         emit_n.image = emit
                         emit_n.interpolation = 'Closest'
                         emit_n.location = -280, -48
-                        links.new(emit_n.outputs[0], shader.inputs['Emission'])
+                        links.new(emit_n.outputs[0], shader.inputs[em_socket])
+                        shader.inputs['Emission Strength'].default_value = 1.0
                     if name[0] == '{':
                         links.new(img_n.outputs[1], shader.inputs['Alpha'])
                         mat.blend_method = 'CLIP'
@@ -297,7 +306,8 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
                     else:
                         mat.use_backface_culling = True
                     if name.startswith(('sky','*lava','*tele')):
-                        links.new(img_n.outputs[0], shader.inputs['Emission'])
+                        links.new(img_n.outputs[0], shader.inputs[em_socket])
+                        shader.inputs['Emission Strength'].default_value = 1.0
                         links.remove(shader.inputs['Base Color'].links[0])
                         shader.inputs['Base Color'].default_value = [0,0,0,1]
                     if name[0] in ('*','#'):
@@ -348,7 +358,12 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
                         mat.asset_data.tags.new(cont_name)
                         img.filepath = f"{tempdir}/{name.replace('*','#')}.png"
                         img.save()
-                        bpy.ops.ed.lib_id_load_custom_preview( {"id": mat},
+                        if bpy.app.version < (4, 0, 0):
+                            bpy.ops.ed.lib_id_load_custom_preview( {"id": mat},
+                                        filepath=img.filepath)
+                        else:
+                            with bpy.context.temp_override(id = mat):
+                                bpy.ops.ed.lib_id_load_custom_preview(
                                         filepath=img.filepath)
 
         if self.option_seq:
@@ -356,6 +371,16 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
 
         return {'FINISHED'}
 
+
+    def compat_new_socket(self, group, in_out, type, name):
+        if bpy.app.version < (4,0,0):
+            if in_out == 'IN':
+                return group.inputs.new(type, name)
+            else:
+                return group.outputs.new(type, name)
+        else:
+            return group.interface.new_socket(name, in_out=in_out+'PUT',
+                                    socket_type=type.replace('XYZ',''))
 
     def make_noodles_post(self, anim_seqs):
         # add stashed sequence frames to materials
@@ -389,22 +414,23 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             links.new(frm0.outputs[0], mix1.inputs[2])
             links.new(mix1.outputs[0], shader.inputs['Base Color'])
 
-            has_emit_frames = ( shader.inputs['Emission'].links
+            has_emit_frames = ( shader.inputs[em_socket].links
                                 or ename in anim_seqs.keys() )
             if has_emit_frames:
                 emix1 = mat.node_tree.nodes.new('ShaderNodeMixRGB')
                 emix1.location = -180, -200
                 drv = emix1.inputs[0].driver_add('default_value')
                 drv.driver.expression = f"{drv_ex}1"
-                if shader.inputs['Emission'].links:
-                    efrm0 = shader.inputs['Emission'].links[0].from_node
+                if shader.inputs[em_socket].links:
+                    efrm0 = shader.inputs[em_socket].links[0].from_node
                     efrm0.location = -280, -400
                     efrm0.hide = True
                     links.new(efrm0.outputs[0], emix1.inputs[2])
                 else:
                     efrm0 = None
                     emix1.inputs[2].default_value = (0,0,0,1)
-                links.new(emix1.outputs[0], shader.inputs['Emission'])
+                links.new(emix1.outputs[0], shader.inputs[em_socket])
+                shader.inputs['Emission Strength'].default_value = 1.0
 
             for n, img in enumerate(sorted(anim_seqs[seq_name],
                                     key=lambda frame: frame.name)):
@@ -451,7 +477,6 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
                 else:
                     emix1.inputs[1].default_value = (0,0,0,1)
 
-
     def make_noodles_pre(self):
         # create node groups for animated water and sky
         fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
@@ -465,7 +490,7 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             coord = group.nodes.new('ShaderNodeTexCoord')
             coord.location = 6*dx, 0
             temp2 = group.nodes.new('NodeGroupOutput')
-            group.outputs.new('NodeSocketVectorXYZ','Vector')
+            self.compat_new_socket(group,'OUT','NodeSocketVectorXYZ','Vector')
             temp1 = group.nodes.new('ShaderNodeVectorMath')
             temp1.operation = 'ADD'
             temp1.inputs[1].default_value = (-0.11,-0.27,0.0)
@@ -506,10 +531,10 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             group = bpy.data.node_groups.new('skycrop', 'ShaderNodeTree')
             input = group.nodes.new('NodeGroupInput')
             input.location = 7*dx, -104
-            group.inputs.new('NodeSocketVectorXYZ','Vector')
-            group.inputs.new('NodeSocketFloat','L/R')
+            self.compat_new_socket(group,'IN','NodeSocketVectorXYZ','Vector')
+            self.compat_new_socket(group,'IN','NodeSocketFloat','L/R')
             temp1 = group.nodes.new('NodeGroupOutput')
-            group.outputs.new('NodeSocketVectorXYZ','Vector')
+            self.compat_new_socket(group,'OUT','NodeSocketVectorXYZ','Vector')
             temp2 = group.nodes.new('ShaderNodeMixRGB')
             temp2.location = dx, 0
             group.links.new(temp2.outputs[0], temp1.inputs[0])
@@ -549,8 +574,8 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             coord = group.nodes.new('ShaderNodeTexCoord')
             coord.location = 3*dx, 200
             temp1 = group.nodes.new('NodeGroupOutput')
-            group.outputs.new('NodeSocketVectorXYZ','Background')
-            group.outputs.new('NodeSocketVectorXYZ','Foreground')
+            self.compat_new_socket(group,'OUT','NodeSocketVectorXYZ','BG')
+            self.compat_new_socket(group,'OUT','NodeSocketVectorXYZ','FG')
             temp2 = group.nodes.new('ShaderNodeGroup')
             temp2.node_tree = bpy.data.node_groups['skycrop']
             temp2.inputs[1].default_value = 0.0
@@ -588,8 +613,8 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             group = bpy.data.node_groups.new('skydome', 'ShaderNodeTree')
             input = group.nodes.new('NodeGroupInput')
             input.location = 4*dx, 0
-            group.inputs.new('NodeSocketColor','Background')
-            group.inputs.new('NodeSocketColor','Foreground')
+            self.compat_new_socket(group,'IN','NodeSocketColor','BG')
+            self.compat_new_socket(group,'IN','NodeSocketColor','FG')
             temp1 = group.nodes.new('ShaderNodeMath')
             temp1.operation = 'GREATER_THAN'
             temp1.location = 3*dx, -64
@@ -613,10 +638,12 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             temp1 = group.nodes.new('ShaderNodeBackground')
             temp1.location = 2*dx, 0
             group.links.new(temp1.outputs[0], temp2.inputs[2])
-            socket = group.inputs.new('NodeSocketColor','Amb Color')
+            socket = self.compat_new_socket(group,'IN','NodeSocketColor',
+                                                            'Amb Color')
             socket.default_value = [0.5,0.5,0.5,1]
             group.links.new(input.outputs[2], temp1.inputs[0])
-            socket = group.inputs.new('NodeSocketFloat','Amb Scale')
+            socket = self.compat_new_socket(group,'IN','NodeSocketFloat',
+                                                            'Amb Scale')
             socket.default_value = 1.0
             group.links.new(input.outputs[3], temp1.inputs[1])
             temp1 = group.nodes.new('ShaderNodeMixShader')
@@ -625,7 +652,8 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             temp2 = group.nodes.new('ShaderNodeBackground')
             temp2.location = dx, 0
             group.links.new(temp2.outputs[0], temp1.inputs[2])
-            socket = group.inputs.new('NodeSocketColor','Cam Color')
+            socket = self.compat_new_socket(group,'IN','NodeSocketColor',
+                                                            'Cam Color')
             socket.default_value = [0.025,0.025,0.025,1]
             group.links.new(input.outputs[4], temp2.inputs[0])
             temp2 = group.nodes.new('ShaderNodeMath')
@@ -633,15 +661,18 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             group.links.new(temp2.outputs[0], temp1.inputs[0])
             temp2.operation = 'MULTIPLY'
             group.links.new(lpath.outputs['Is Camera Ray'], temp2.inputs[0])
-            socket = group.inputs.new('NodeSocketFloat','Cam Blend')
+            socket = self.compat_new_socket(group,'IN','NodeSocketFloat',
+                                                            'Cam Blend')
             socket.default_value, socket.min_value, socket.max_value = 1, 0, 1
             group.links.new(input.outputs[5], temp2.inputs[1])
             temp2 = group.nodes.new('NodeGroupOutput')
+            self.compat_new_socket(group,'OUT','NodeSocketShader','Background')
             temp2.location = -dx, 128
             group.links.new(temp1.outputs[0], temp2.inputs[0])
         if self.option_scroll and 'skyportal' not in bpy.data.node_groups:
             group = bpy.data.node_groups.new('skyportal', 'ShaderNodeTree')
             temp1 = group.nodes.new('NodeGroupOutput')
+            self.compat_new_socket(group,'OUT','NodeSocketShader','Shader')
             temp2 = group.nodes.new('ShaderNodeMixShader')
             temp2.location = dx, 0
             group.links.new(temp2.outputs[0], temp1.inputs[0])
@@ -650,7 +681,7 @@ class ImportQuakeWad(bpy.types.Operator, ImportHelper):
             group.links.new(temp1.outputs[0], temp2.inputs[2])
             temp1 = group.nodes.new('ShaderNodeBsdfGlass')
             temp1.location = 2*dx, 0
-            temp1.distribution = 'SHARP'
+            if bpy.app.version < (4,0,0): temp1.distribution = 'SHARP'
             temp1.inputs['IOR'].default_value = 1.0
             group.links.new(temp1.outputs[0], temp2.inputs[1])
             temp1 = group.nodes.new('ShaderNodeMath')
@@ -742,7 +773,10 @@ class ApplyAssetEditMode(bpy.types.Operator):
                 and context.active_file.id_type == 'MATERIAL' )
 
     def execute(self, context):
-        mat = context.active_file.local_id
+        if bpy.app.version < (4,0,0):
+            mat = context.active_file.local_id
+        else:
+            mat = context.asset.local_id
         if mat is None:
             lib_path = context.preferences.filepaths.asset_libraries.get(
                     context.area.spaces.active.params.asset_library_ref).path
